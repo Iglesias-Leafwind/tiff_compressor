@@ -29,10 +29,17 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
+import java.awt.image.BufferedImage;
 import java.io.*;
 import java.awt.*;
 import java.awt.event.*;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
@@ -46,12 +53,14 @@ import javax.swing.text.StyleContext;
  *   images/Open16.gif
  *   images/Save16.gif
  */
-public class FileChooserDemo extends JPanel
-        implements ActionListener {
+public class FileChooserDemo extends JPanel implements ActionListener {
     static private final String newline = "\n";
     static JButton openButton, saveButton;
     static JTextPane log;
+    static final long GB = 1024L * 1024L * 1024L; // 1GB
     JFileChooser fc;
+
+    ExecutorService pool = Executors.newFixedThreadPool(1);
 
     static final String GDAL_PATH = "gdalwin32-1.6/bin/gdal_translate.exe";
     static final String PARAMS = " -co COMPRESS=DEFLATE ";
@@ -95,14 +104,12 @@ public class FileChooserDemo extends JPanel
         //Add the preview pane.
         fc.setAccessory(new ImagePreview(fc));
 
-        openButton = new JButton("Open a File...",
-                createImageIcon("images/Open16.gif"));
+        openButton = new JButton("Open a File...", createImageIcon("images/Open16.gif"));
         openButton.addActionListener(this);
 
         //Create the save button.  We use the image from the JLF
         //Graphics Repository (but we extracted it from the jar).
-        saveButton = new JButton("Save a File...",
-                createImageIcon("images/Save16.gif"));
+        saveButton = new JButton("Save a File...", createImageIcon("images/Save16.gif"));
         saveButton.addActionListener(this);
 
         //For layout purposes, put the buttons in a separate panel
@@ -139,16 +146,24 @@ public class FileChooserDemo extends JPanel
                 if (in == null) {
                     appendToPane("There is no selected input file!", Color.black);
                 } else {
-                    String saved;
-                    if (file.isDirectory()) {
-                        saved = file.getAbsolutePath() + "/" + in.getName();
-                        exec(in.getAbsolutePath(), file.getAbsolutePath() + "/" + in.getName());
+                    File input = in;
+                    if (check(input.length())) {
+                        appendToPane("Splitting the file..." + newline);
+                        pool.execute(() -> {
+                            List<String> splitImage;
+                            if (file.isDirectory()) {
+                                //exec(input.getAbsolutePath(), file.getAbsolutePath() + "/" + input.getName());
+                                splitImage = split(input, file.getAbsolutePath() + "/" + input.getName());
+                            } else {
+                                // exec(input.getAbsolutePath(), file.getAbsolutePath());
+                                splitImage = split(input, file.getAbsolutePath());
+                            }
+                            appendToPane("File successfully split into: " + splitImage + newline, Color.BLUE);
+                        });
                     } else {
-                        saved = file.getAbsolutePath();
-                        exec(in.getAbsolutePath(), file.getAbsolutePath());
+                        appendToPane("There is no need to split the file." + newline, Color.RED);
                     }
-                    appendToPane("File successfully saved at ");
-                    appendToPane(saved + newline, Color.cyan);
+
                 }
 
                 in = null;
@@ -199,7 +214,7 @@ public class FileChooserDemo extends JPanel
         //Create and set up the window.
         JFrame frame = new JFrame("FileChooserDemo");
         frame.setSize(650, 750);
-        frame.setResizable(false);
+        frame.setResizable(true);
         int windowWidth = frame.getWidth();
         int windowHeight = frame.getHeight();
         Toolkit kit = Toolkit.getDefaultToolkit();
@@ -218,21 +233,57 @@ public class FileChooserDemo extends JPanel
         frame.setVisible(true);
     }
 
+
+    private static String nextName(String originalPath, int id) {
+        String[] split = originalPath.split("\\.");
+        return split[0] + "_" + id + "." + split[1];
+    }
+
+    private static List<String> split(File file, String outputPath) {
+        try {
+            BufferedImage image = ImageIO.read(file);
+
+            //Split the image into smaller TIFF files
+            int w = image.getWidth();
+            int h = image.getHeight();
+
+            int numCols = 2;
+            int numRows = 2;
+            int cellWidth = w / numCols;
+            int cellHeight = h / numRows;
+
+            List<String> res = new ArrayList<>();
+            int i = 0;
+            //Iterate through the image and write out each of the smaller TIFF files
+            for (int y = 0; y < numRows; y++) {
+                for (int x = 0; x < numCols; x++) {
+                    BufferedImage subImage = image.getSubimage(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+                    String newName = nextName(outputPath, i++);
+                    File outputFile = new File(newName);
+                    res.add(newName);
+                    ImageIO.write(subImage, "tiff", outputFile);
+                }
+            }
+
+            return res;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+    }
+
+    private static boolean check(long fileSize) {
+        return fileSize / GB >= 2;
+    }
+
+
     public static void main(String[] args) {
         //Schedule a job for the event dispatch thread:
         //creating and showing this application's GUI.
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                //Turn off metal's use of bold fonts
-                UIManager.put("swing.boldMetal", Boolean.FALSE);
-                createAndShowGUI();
-            }
+        SwingUtilities.invokeLater(() -> {
+            //Turn off metal's use of bold fonts
+            UIManager.put("swing.boldMetal", Boolean.FALSE);
+            createAndShowGUI();
         });
-    }
-
-    private static void exec(String fileNameIn, String fileNameOut) {
-        URL resource = FileChooserDemo.class.getResource(GDAL_PATH);
-        String cmd = resource.getPath() + " " + PARAMS + fileNameIn + " " + fileNameOut;
-        ExeExecutor.exec(cmd);
     }
 }
